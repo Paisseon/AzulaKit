@@ -5,6 +5,6 @@
 //  Created by Lilliana on 16/02/2023.
 //
 
-protocol PrettyPrinter {
+public protocol PrettyPrinter {
     func print(_ text: String, type: PrintType) -> Void
 }

@@ -5,7 +5,7 @@
 //  Created by Lilliana on 16/02/2023.
 //
 
-enum PrintType {
+public enum PrintType {
     case error
     case info
     case warn

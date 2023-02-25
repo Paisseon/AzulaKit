@@ -11,11 +11,13 @@ import MachO
 private var loadCommands: [any LoadCommand] = []
 private var machHeaders: [MachHeader] = []
 
+// MARK: - AzulaKit
+
 @available(macOS 11, iOS 14, *)
-struct AzulaKit {
+public struct AzulaKit {
     // MARK: Lifecycle
 
-    init(
+    public init(
         dylibs _dylibs: [String],
         remove: [String],
         targetURL url: URL,
@@ -88,16 +90,16 @@ struct AzulaKit {
                     pretty.print(String(format: "Unknown MachO magic: 0x%X", mh.header.magic), type: .warn)
                     isByteSwapped = true
             }
-            
+
             pretty.print("Getting load commands for \(mh.header.cputype == CPU_TYPE_ARM64 ? "arm64" : "x86_64")...", type: .info)
 
             loadCommands.append(contentsOf: getLoadCommands(at: mh.offset, isByteSwapped: isByteSwapped))
         }
     }
 
-    // MARK: Internal
+    // MARK: Public
 
-    func inject() -> Bool {
+    public func inject() -> Bool {
         guard !isEncrypted() else {
             pretty.print("Binary is encrypted, you must decrypt", type: .error)
             return false
@@ -131,8 +133,8 @@ struct AzulaKit {
 
         return true
     }
-    
-    func remove() -> Bool {
+
+    public func remove() -> Bool {
         for payload: String in removed {
             for mh in machHeaders {
                 guard _remove(payload, for: mh) else {
@@ -144,7 +146,7 @@ struct AzulaKit {
         return true
     }
 
-    func slice() -> Bool {
+    public func slice() -> Bool {
         let signatureLoadCommands: [SignatureCommand] = loadCommands.filter { $0 is SignatureCommand }.map { $0 as! SignatureCommand }
         var patches: [Patch] = []
         var strip: Int = 0x0000_1337
@@ -198,7 +200,7 @@ struct AzulaKit {
 
         newHeader.ncmds += 1
         newHeader.sizeofcmds += UInt32(payloadSize)
-        
+
         if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
             machHeaders[index] = MachHeader(header: newHeader, offset: mh.offset)
         }
@@ -211,7 +213,7 @@ struct AzulaKit {
 
         return patch(patches)
     }
-    
+
     private func _remove(
         _ payload: String,
         for mh: MachHeader
@@ -230,7 +232,7 @@ struct AzulaKit {
                 var newHeader: mach_header_64 = mh.header
                 newHeader.ncmds -= 1
                 newHeader.sizeofcmds -= UInt32(dllc.command.cmdsize)
-                
+
                 if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
                     machHeaders[index] = MachHeader(header: newHeader, offset: mh.offset)
                 }
@@ -287,14 +289,14 @@ struct AzulaKit {
                     }
 
                     myLoadCommand = SignatureCommand(offset: offset, command: command)
-                    
+
                 case UInt32(LC_SEGMENT_64):
                     var command: segment_command_64 = target.extract(at: offset)
-                    
+
                     if isByteSwapped {
                         swap_segment_command_64(&command, NXByteOrder(rawValue: 0))
                     }
-                    
+
                     myLoadCommand = SegmentCommand(offset: offset, command: command)
 
                 default:
@@ -307,7 +309,7 @@ struct AzulaKit {
 
         return ret
     }
-    
+
     private func hasSpace(
         for payload: String,
         header: mach_header_64
@@ -315,7 +317,7 @@ struct AzulaKit {
         let pathSize: Int = (payload.count & -8) + 8
         let payloadSize: Int = MemoryLayout<dylib_command>.size + pathSize
         let segCommands: [SegmentCommand] = loadCommands.filter { $0 is SegmentCommand }.map { $0 as! SegmentCommand }
-        
+
         for slc: SegmentCommand in segCommands {
             var segName: CharTuple = slc.command.segname
 
@@ -333,9 +335,9 @@ struct AzulaKit {
                 }
             }
         }
-        
+
         pretty.print("Couldn't find text section", type: .error)
-        
+
         return false
     }
 
