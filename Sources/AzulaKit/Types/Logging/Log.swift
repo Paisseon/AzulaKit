@@ -5,7 +5,10 @@
 //  Created by Lilliana on 05/03/2023.
 //
 
-public struct Log: Hashable {
+import Foundation
+
+public struct Log: Hashable, Identifiable {
+    public let id: UUID = .init()
     public let text: String
     public let type: PrintType
     
