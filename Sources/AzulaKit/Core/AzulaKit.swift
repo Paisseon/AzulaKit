@@ -93,12 +93,20 @@ public struct AzulaKit {
 
             pretty?.print(Log(text: "Getting load commands for \(mh.header.cputype == CPU_TYPE_ARM64 ? "arm64" : "x86_64")...", type: .info))
 
-            loadCommands.append(contentsOf: getLoadCommands(at: mh.offset, isByteSwapped: isByteSwapped))
+            var endOff: Int = 0
+            loadCommands.append(contentsOf: getLoadCommands(at: mh.offset, isByteSwapped: isByteSwapped, endsAt: &endOff))
+
+            if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
+                machHeaders[index].endOffset = endOff
+            }
+
+            pretty?.print(Log(text: String(format: "Arch ends at 0x%X", endOff), type: .info))
         }
     }
 
     // MARK: Public
 
+    @discardableResult
     public func inject() -> Bool {
         guard !isEncrypted() else {
             pretty?.print(Log(text: "Binary is encrypted, you must decrypt", type: .error))
@@ -134,6 +142,7 @@ public struct AzulaKit {
         return true
     }
 
+    @discardableResult
     public func remove() -> Bool {
         for payload: String in removed {
             for mh in machHeaders {
@@ -146,6 +155,7 @@ public struct AzulaKit {
         return true
     }
 
+    @discardableResult
     public func slice() -> Bool {
         let signatureLoadCommands: [SignatureCommand] = loadCommands.filter { $0 is SignatureCommand }.map { $0 as! SignatureCommand }
         var patches: [Patch] = []
@@ -227,7 +237,7 @@ public struct AzulaKit {
 
                 let start = dllc.offset
                 let size = Int(dllc.cmdSize)
-                let end = start + size
+                let end = mh.endOffset
 
                 var newHeader: mach_header_64 = mh.header
                 newHeader.ncmds -= 1
@@ -251,7 +261,8 @@ public struct AzulaKit {
 
     private func getLoadCommands(
         at _offset: Int,
-        isByteSwapped: Bool
+        isByteSwapped: Bool,
+        endsAt endOffset: inout Int
     ) -> [any LoadCommand] {
         let header: mach_header_64 = target.extract()
         var offset: Int = _offset + MemoryLayout.size(ofValue: header)
@@ -310,6 +321,8 @@ public struct AzulaKit {
             ret.append(myLoadCommand)
             offset += Int(loadCommand.cmdsize)
         }
+
+        endOffset = offset
 
         return ret
     }
