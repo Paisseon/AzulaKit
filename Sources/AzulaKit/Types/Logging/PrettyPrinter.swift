@@ -6,5 +6,5 @@
 //
 
 public protocol PrettyPrinter {
-    func print(_ text: String, type: PrintType) -> Void
+    func print(_ log: Log) -> Void
 }

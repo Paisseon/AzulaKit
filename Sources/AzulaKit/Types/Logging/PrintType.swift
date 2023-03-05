@@ -1,5 +1,5 @@
 //
-//  LogType.swift
+//  PrintType.swift
 //  Azula
 //
 //  Created by Lilliana on 16/02/2023.
