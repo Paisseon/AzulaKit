@@ -12,5 +12,5 @@ struct DylibCommand: LoadCommand {
     
     let offset: Int
     let command: T
-    let cmdSize: Int
+    let mh: MachHeader
 }

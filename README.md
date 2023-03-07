@@ -10,7 +10,9 @@ A Swift library to manipulate load commands in 64-bit Mach-O binaries.
 - Remove multiple load commands at once
 - Nullify the code signature
 - Supports both thin and fat binaries
-- Parses load commands only once for performance
+- Parses load commands only once (per arch) for performance
+- Easy to integrate into your project
+- Example code in my Azula and AzulaApp repositories
 
 ## Usage
 Just add AzulaKit to your project with SPM and initialise an instance of the struct AzulaKit. You can now use `inject()`, `remove()`, and `slice()` functions. These take no arguments, and handle the values given during initialisation.
@@ -28,5 +30,5 @@ Fixing bugs, improving performance, etc. is always appreciated!
 - [Jonathan Levin][1] 
 - [ParadiseDuo][2] 
 
-[1]:    https://annas-archive.org/md5/c2f0370903c27a149b66326d9e584719
-[2]:    https://github.com/paradiseduo/inject
+[1]:	https://annas-archive.org/md5/c2f0370903c27a149b66326d9e584719
+[2]:	https://github.com/paradiseduo/inject

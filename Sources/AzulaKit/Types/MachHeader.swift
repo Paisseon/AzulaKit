@@ -10,5 +10,4 @@ import MachO
 struct MachHeader {
     let header: mach_header_64
     let offset: Int
-    var endOffset: Int = 0
 }

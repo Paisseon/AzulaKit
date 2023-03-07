@@ -8,8 +8,8 @@
 import Foundation
 import MachO
 
-private var loadCommands: [any LoadCommand] = []
-private var machHeaders: [MachHeader] = []
+var loadCommands: [any LoadCommand] = []
+var machHeaders: [MachHeader] = []
 
 // MARK: - AzulaKit
 
@@ -22,31 +22,23 @@ public struct AzulaKit {
         targetURL url: URL,
         printer: (any PrettyPrinter)? = nil
     ) {
-        targetURL = url
+        // Initialise all the variables
+
         dylibs = _dylibs
         removed = remove
         pretty = printer
+        targetURL = url
+        target = (try? .init(contentsOf: url)) ?? Data()
+        extractor = Extractor(target: target, pretty: pretty)
+        patcher = Patcher(targetURL: url, pretty: pretty)
+        injector = Injector(pretty: pretty, patcher: patcher, extractor: extractor)
+        remover = Remover(pretty: pretty, extractor: extractor, patcher: patcher)
 
-        do {
-            let bakURL: URL = .init(fileURLWithPath: "./" + url.lastPathComponent + ".bak")
+        // Parse the target binary to get headers and load commands
 
-            if access(bakURL.path, F_OK) != 0 {
-                try FileManager.default.copyItem(at: url, to: bakURL)
-            }
-        } catch {
-            pretty?.print(Log(text: error.localizedDescription, type: .warn))
-            pretty?.print(Log(text: "Couldn't create backup of target", type: .warn))
-        }
-
-        guard let data: Data = try? .init(contentsOf: url) else {
-            pretty?.print(Log(text: "Couldn't read target", type: .warn))
-            target = Data()
+        guard let fatHeader: fat_header = extractor.extract() else {
             return
         }
-
-        target = data
-
-        let fatHeader: fat_header = target.extract()
 
         switch fatHeader.magic {
             case FAT_CIGAM,
@@ -63,18 +55,21 @@ public struct AzulaKit {
                         offset += MemoryLayout<fat_arch>.size
                     }
 
-                    let arch: fat_arch = target.extract(at: offset)
-                    let archOffset: UInt32 = _OSSwapInt32(arch.offset)
-                    let header: mach_header_64 = target.extract(at: Int(archOffset))
+                    let arch: fat_arch = extractor.extract(at: offset)!
+                    let archOffset: Int = .init(_OSSwapInt32(arch.offset))
+                    let header: mach_header_64 = extractor.extract(at: archOffset)!
 
-                    machHeaders.append(MachHeader(header: header, offset: Int(archOffset)))
+                    machHeaders.append(MachHeader(header: header, offset: archOffset))
                 }
             default:
                 pretty?.print(Log(text: "Target has 1 arch", type: .info))
 
-                let header: mach_header_64 = target.extract()
+                let header: mach_header_64 = extractor.extract()!
                 machHeaders.append(MachHeader(header: header, offset: 0))
         }
+        
+        // Doing this twice on fat binaries slows things down noticably
+        // TODO: Maybe calculate arch offset difference and iterate through loadCommands?
 
         for mh: MachHeader in machHeaders {
             let isByteSwapped: Bool
@@ -91,16 +86,8 @@ public struct AzulaKit {
                     isByteSwapped = true
             }
 
-            pretty?.print(Log(text: "Getting load commands for \(mh.header.cputype == CPU_TYPE_ARM64 ? "arm64" : "x86_64")...", type: .info))
-
-            var endOff: Int = 0
-            loadCommands.append(contentsOf: getLoadCommands(at: mh.offset, isByteSwapped: isByteSwapped, endsAt: &endOff))
-
-            if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
-                machHeaders[index].endOffset = endOff
-            }
-
-            pretty?.print(Log(text: String(format: "Arch ends at 0x%X", endOff), type: .info))
+            pretty?.print(Log(text: "Getting load commands for \(getArchName(for: mh.header))...", type: .info))
+            loadCommands.append(contentsOf: getLoadCommands(for: mh, isByteSwapped: isByteSwapped))
         }
     }
 
@@ -112,6 +99,8 @@ public struct AzulaKit {
             pretty?.print(Log(text: "Binary is encrypted, you must decrypt", type: .error))
             return false
         }
+
+        // I know that using Algorithms.product() would be cleaner here, but I want to avoid dependencies
 
         for payload: String in dylibs {
             for mh: MachHeader in machHeaders {
@@ -129,14 +118,14 @@ public struct AzulaKit {
                         return false
                 }
 
-                pretty?.print(Log(text: "Current arch is \(mh.header.cputype == CPU_TYPE_ARM64 ? "arm64" : "x86_64")", type: .info))
+                pretty?.print(Log(text: "Current arch is \(getArchName(for: mh.header))", type: .info))
 
-                guard _inject(payload, mh: mh, isByteSwapped: isByteSwapped) else {
+                guard injector.inject(payload, mh: mh, isByteSwapped: isByteSwapped) else {
                     return false
                 }
             }
 
-            pretty?.print(Log(text: "Injected \(payload.components(separatedBy: "/").last ?? "")", type: .info))
+            pretty?.print(Log(text: "Injected \(payload.components(separatedBy: "/").last ?? "???")", type: .info))
         }
 
         return true
@@ -144,15 +133,7 @@ public struct AzulaKit {
 
     @discardableResult
     public func remove() -> Bool {
-        for payload: String in removed {
-            for mh in machHeaders {
-                guard _remove(payload, for: mh) else {
-                    return false
-                }
-            }
-        }
-
-        return true
+        remover.remove(removed)
     }
 
     @discardableResult
@@ -165,111 +146,46 @@ public struct AzulaKit {
             patches.append(Patch(offset: cslc.offset, data: Data(bytes: &strip, count: 4)))
         }
 
-        return patch(patches)
+        return patcher.patch(patches)
     }
 
     // MARK: Private
-
-    private typealias CharTuple = (Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8)
 
     private let dylibs: [String]
     private let pretty: (any PrettyPrinter)?
     private let removed: [String]
     private let target: Data
     private let targetURL: URL
+    private let injector: Injector
+    private let patcher: Patcher
+    private let remover: Remover
+    private let extractor: Extractor
 
-    private func _inject(
-        _ payload: String,
-        mh: MachHeader,
-        isByteSwapped _: Bool
-    ) -> Bool {
-        let pathSize: Int = (payload.count & -8) + 8
-        let payloadSize: Int = MemoryLayout<dylib_command>.size + pathSize
-        let cmdOffset: UInt64 = UInt64(mh.offset + MemoryLayout<mach_header_64>.size)
-
-        guard hasSpace(for: payload, header: mh.header) else {
-            pretty?.print(Log(text: "Not enough space to inject payload", type: .error))
-            return false
+    // Covers the three architectures which Azula supports
+    
+    private func getArchName(
+        for header: mach_header_64
+    ) -> String {
+        if header.cputype != CPU_TYPE_ARM64 {
+            return "x86_64"
         }
 
-        guard !isAlreadyInjected(payload) else {
-            pretty?.print(Log(text: "Payload is already injected", type: .error))
-            return false
-        }
-
-        var dylibCmd: dylib_command = .init()
-        var newHeader: mach_header_64 = mh.header
-
-        pretty?.print(Log(text: "Creating load command for payload...", type: .info))
-
-        dylibCmd.cmd = LC_LOAD_WEAK_DYLIB
-        dylibCmd.cmdsize = UInt32(payloadSize)
-        dylibCmd.dylib.name = lc_str(offset: UInt32(MemoryLayout<dylib_command>.size))
-
-        pretty?.print(Log(text: "Updating header...", type: .info))
-
-        newHeader.ncmds += 1
-        newHeader.sizeofcmds += UInt32(payloadSize)
-
-        if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
-            machHeaders[index] = MachHeader(header: newHeader, offset: mh.offset)
-        }
-
-        let patches: [Patch] = [
-            Patch(offset: mh.offset, data: Data(bytes: &newHeader, count: MemoryLayout<mach_header_64>.size)),
-            Patch(offset: Int(cmdOffset) + Int(mh.header.sizeofcmds), data: Data(bytes: &dylibCmd, count: MemoryLayout<dylib_command>.size)),
-            Patch(offset: nil, data: payload.data(using: .utf8)!),
-        ]
-
-        return patch(patches)
-    }
-
-    private func _remove(
-        _ payload: String,
-        for mh: MachHeader
-    ) -> Bool {
-        let dylibLoadCommands: [DylibCommand] = loadCommands.filter { $0 is DylibCommand }.map { $0 as! DylibCommand }
-        var patches: [Patch] = []
-
-        for dllc: DylibCommand in dylibLoadCommands {
-            if String(withData: target, at: dllc.offset, cmdSize: dllc.cmdSize, cmdString: dllc.command.dylib.name) == payload {
-                pretty?.print(Log(text: "Found load command to remove", type: .info))
-
-                let start = dllc.offset
-                let size = Int(dllc.cmdSize)
-                let end = mh.endOffset
-
-                var newHeader: mach_header_64 = mh.header
-                newHeader.ncmds -= 1
-                newHeader.sizeofcmds -= UInt32(dllc.command.cmdsize)
-
-                if let index: Int = machHeaders.firstIndex(where: { $0.offset == mh.offset }) {
-                    machHeaders[index] = MachHeader(header: newHeader, offset: mh.offset)
-                }
-
-                let cmdRange: Range<Data.Index> = .init(NSRange(location: start + size, length: end - start - size))!
-                let cmdData: Data = target.subdata(in: cmdRange) + Data(repeating: 0, count: size)
-                let nhData: Data = .init(bytes: &newHeader, count: MemoryLayout<mach_header_64>.size)
-
-                patches.append(Patch(offset: mh.offset, data: nhData))
-                patches.append(Patch(offset: start, data: cmdData))
-            }
-        }
-
-        return patch(patches)
+        return header.cpusubtype == CPU_SUBTYPE_ARM64E ? "arm64e" : "arm64"
     }
 
     private func getLoadCommands(
-        at _offset: Int,
-        isByteSwapped: Bool,
-        endsAt endOffset: inout Int
+        for mh: MachHeader,
+        isByteSwapped: Bool
     ) -> [any LoadCommand] {
-        let header: mach_header_64 = target.extract()
-        var offset: Int = _offset + MemoryLayout.size(ofValue: header)
+        guard let header: mach_header_64 = extractor.extract() else {
+            return []
+        }
+
+        var offset: Int = mh.offset + MemoryLayout.size(ofValue: header)
         var ret: [any LoadCommand] = []
 
         for _ in 0 ..< header.ncmds {
-            guard let loadCommand: load_command = target.safeExtract(at: offset) else {
+            guard let loadCommand: load_command = extractor.extract(at: offset) else {
                 pretty?.print(Log(text: "Offset for load command is out-of-bounds", type: .error))
                 return ret
             }
@@ -279,16 +195,16 @@ public struct AzulaKit {
             switch loadCommand.cmd {
                 case LC_LOAD_WEAK_DYLIB,
                      UInt32(LC_LOAD_DYLIB):
-                    var command: dylib_command = target.extract(at: offset)
+                    var command: dylib_command = extractor.extract(at: offset)!
 
                     if isByteSwapped {
                         swap_dylib_command(&command, NXByteOrder(rawValue: 0))
                     }
 
-                    myLoadCommand = DylibCommand(offset: offset, command: command, cmdSize: Int(loadCommand.cmdsize))
+                    myLoadCommand = DylibCommand(offset: offset, command: command, mh: mh)
 
                 case UInt32(LC_ENCRYPTION_INFO_64):
-                    var command: encryption_info_command_64 = target.extract(at: offset)
+                    var command: encryption_info_command_64 = extractor.extract(at: offset)!
 
                     if isByteSwapped {
                         swap_encryption_command_64(&command, NXByteOrder(rawValue: 0))
@@ -297,7 +213,7 @@ public struct AzulaKit {
                     myLoadCommand = EncryptionCommand(offset: offset, command: command)
 
                 case UInt32(LC_CODE_SIGNATURE):
-                    var command: linkedit_data_command = target.extract(at: offset)
+                    var command: linkedit_data_command = extractor.extract(at: offset)!
 
                     if isByteSwapped {
                         swap_linkedit_data_command(&command, NXByteOrder(rawValue: 0))
@@ -306,7 +222,7 @@ public struct AzulaKit {
                     myLoadCommand = SignatureCommand(offset: offset, command: command)
 
                 case UInt32(LC_SEGMENT_64):
-                    var command: segment_command_64 = target.extract(at: offset)
+                    var command: segment_command_64 = extractor.extract(at: offset)!
 
                     if isByteSwapped {
                         swap_segment_command_64(&command, NXByteOrder(rawValue: 0))
@@ -322,65 +238,7 @@ public struct AzulaKit {
             offset += Int(loadCommand.cmdsize)
         }
 
-        endOffset = offset
-
         return ret
-    }
-
-    private func hasSpace(
-        for payload: String,
-        header: mach_header_64
-    ) -> Bool {
-        let pathSize: Int = (payload.count & -8) + 8
-        let payloadSize: Int = MemoryLayout<dylib_command>.size + pathSize
-        let segCommands: [SegmentCommand] = loadCommands.filter { $0 is SegmentCommand }.map { $0 as! SegmentCommand }
-
-        for slc: SegmentCommand in segCommands {
-            var segName: CharTuple = slc.command.segname
-
-            if strncmp(&segName.0, "__TEXT", 15) == 0 {
-                for i: UInt32 in 0 ..< slc.command.nsects {
-                    let sectOffset: Int = slc.offset + MemoryLayout<segment_command_64>.size + MemoryLayout<section_64>.size * Int(i)
-                    let sectCmd: section_64 = target.extract(at: sectOffset)
-                    var sectName: CharTuple = sectCmd.sectname
-
-                    if strncmp(&sectName.0, "__text", 15) == 0 {
-                        let space: UInt32 = sectCmd.offset - header.sizeofcmds - UInt32(MemoryLayout<mach_header_64>.size)
-                        pretty?.print(Log(text: String(format: "Space available in arch: 0x%X", space), type: .info))
-                        return space > payloadSize
-                    }
-                }
-            }
-        }
-
-        pretty?.print(Log(text: "Couldn't find text section", type: .error))
-
-        return false
-    }
-
-    private func isAlreadyInjected(
-        _ payload: String
-    ) -> Bool {
-        let dylibLoadCommands: [DylibCommand] = loadCommands.filter { $0 is DylibCommand }.map { $0 as! DylibCommand }
-
-        for dllc: DylibCommand in dylibLoadCommands {
-            let curPath: String = .init(
-                withData: target,
-                at: dllc.offset,
-                cmdSize: dllc.cmdSize,
-                cmdString: dllc.command.dylib.name
-            )
-
-            guard curPath != payload else {
-                return true
-            }
-
-            if curPath.components(separatedBy: "/").last == payload.components(separatedBy: "/").last {
-                pretty?.print(Log(text: "Similar path found in target: \(curPath)", type: .warn))
-            }
-        }
-
-        return false
     }
 
     private func isEncrypted() -> Bool {
@@ -393,38 +251,5 @@ public struct AzulaKit {
         }
 
         return false
-    }
-
-    private func patch(
-        _ patches: [Patch]
-    ) -> Bool {
-        guard let fileHandle: FileHandle = try? .init(forWritingTo: targetURL) else {
-            pretty?.print(Log(text: "Couldn't get writing handle for target", type: .error))
-            return false
-        }
-
-        guard !patches.isEmpty else {
-            pretty?.print(Log(text: "No patches", type: .warn))
-            return false
-        }
-
-        do {
-            pretty?.print(Log(text: "Patching target...", type: .info))
-
-            for patch in patches {
-                if let offset: Int = patch.offset {
-                    try fileHandle.seek(toOffset: UInt64(offset))
-                }
-
-                try fileHandle.write(contentsOf: patch.data)
-            }
-
-            try fileHandle.close()
-        } catch {
-            pretty?.print(Log(text: error.localizedDescription, type: .error))
-            return false
-        }
-
-        return true
     }
 }
