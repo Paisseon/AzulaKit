@@ -1,6 +1,6 @@
 //
-//  File.swift
-//
+//  Remover.swift
+//  AzulaKit
 //
 //  Created by Lilliana on 06/03/2023.
 //
@@ -9,9 +9,9 @@ import Foundation
 import MachO
 
 struct Remover {
-    let pretty: (any PrettyPrinter)?
     let extractor: Extractor
     let patcher: Patcher
+    let pretty: (any PrettyPrinter)?
 
     func remove(
         _ payloads: [String]

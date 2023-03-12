@@ -1,6 +1,6 @@
 //
-//  File.swift
-//
+//  Extractor.swift
+//  AzulaKit
 //
 //  Created by Lilliana on 06/03/2023.
 //
@@ -8,8 +8,8 @@
 import Foundation
 
 struct Extractor {
-    let target: Data
     let pretty: (any PrettyPrinter)?
+    let target: Data
 
     func extract<T>(
         at offset: Int = 0

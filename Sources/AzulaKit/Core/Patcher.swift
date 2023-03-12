@@ -1,6 +1,6 @@
 //
-//  File.swift
-//
+//  Patcher.swift
+//  AzulaKit
 //
 //  Created by Lilliana on 06/03/2023.
 //
@@ -8,8 +8,8 @@
 import Foundation
 
 struct Patcher {
-    let targetURL: URL
     let pretty: (any PrettyPrinter)?
+    let targetURL: URL
 
     func patch(
         _ patches: [Patch]
@@ -20,7 +20,7 @@ struct Patcher {
         }
 
         guard let handle: FileHandle = try? .init(forWritingTo: targetURL) else {
-            pretty?.print(Log(text: "Couldn't get write handle to target", type: .error))
+            pretty?.print(Log(text: "Couldn't get write handle to \(targetURL.path)", type: .error))
             return false
         }
 
